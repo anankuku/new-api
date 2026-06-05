@@ -255,10 +255,45 @@ func InjectGoogleAnalytics() {
 	classicIndexPage = bytes.ReplaceAll(classicIndexPage, placeholder, analyticsInject)
 }
 
+// timeStartupStep 记录关键启动步骤耗时，用于排查 Render 免费实例冷启动 502/实例失败。
+func timeStartupStep(name string, fn func() error) error {
+	start := time.Now()
+	err := fn()
+	elapsedMs := time.Since(start).Milliseconds()
+	if err != nil {
+		common.SysLog(fmt.Sprintf("[startup] %s failed in %d ms: %v", name, elapsedMs, err))
+		return err
+	}
+	common.SysLog(fmt.Sprintf("[startup] %s finished in %d ms", name, elapsedMs))
+	return nil
+}
+
+// timeStartupStepNoError 记录无返回值启动步骤耗时，避免排查时只能看到总启动时间。
+func timeStartupStepNoError(name string, fn func()) {
+	start := time.Now()
+	fn()
+	common.SysLog(fmt.Sprintf("[startup] %s finished in %d ms", name, time.Since(start).Milliseconds()))
+}
+
+// warmPricingCacheAsync 异步预热定价缓存，避免大量渠道/模型时阻塞 Render 监听端口。
+func warmPricingCacheAsync() {
+	if !common.GetEnvOrDefaultBool("PRICING_CACHE_WARM_ENABLED", true) {
+		common.SysLog("[startup] model.GetPricing warm cache disabled by PRICING_CACHE_WARM_ENABLED")
+		return
+	}
+	go func() {
+		start := time.Now()
+		model.GetPricing()
+		common.SysLog(fmt.Sprintf("[startup] async model.GetPricing finished in %d ms", time.Since(start).Milliseconds()))
+	}()
+}
+
 func InitResources() error {
 	// Initialize resources here if needed
 	// This is a placeholder function for future resource initialization
-	err := godotenv.Load(".env")
+	err := timeStartupStep("godotenv.Load", func() error {
+		return godotenv.Load(".env")
+	})
 	if err != nil {
 		if common.DebugEnabled {
 			common.SysLog("No .env file found, using default environment variables. If needed, please create a .env file and set the relevant variables.")
@@ -266,54 +301,54 @@ func InitResources() error {
 	}
 
 	// 加载环境变量
-	common.InitEnv()
+	timeStartupStepNoError("common.InitEnv", common.InitEnv)
 
-	logger.SetupLogger()
+	timeStartupStepNoError("logger.SetupLogger", logger.SetupLogger)
 
 	// Initialize model settings
-	ratio_setting.InitRatioSettings()
+	timeStartupStepNoError("ratio_setting.InitRatioSettings", ratio_setting.InitRatioSettings)
 
-	service.InitHttpClient()
+	timeStartupStepNoError("service.InitHttpClient", service.InitHttpClient)
 
-	service.InitTokenEncoders()
+	timeStartupStepNoError("service.InitTokenEncoders", service.InitTokenEncoders)
 
 	// Initialize SQL Database
-	err = model.InitDB()
+	err = timeStartupStep("model.InitDB", model.InitDB)
 	if err != nil {
 		common.FatalLog("failed to initialize database: " + err.Error())
 		return err
 	}
 
-	model.CheckSetup()
+	timeStartupStepNoError("model.CheckSetup", model.CheckSetup)
 
 	// Initialize options, should after model.InitDB()
-	model.InitOptionMap()
+	timeStartupStepNoError("model.InitOptionMap", model.InitOptionMap)
 
 	// 清理旧的磁盘缓存文件
-	common.CleanupOldCacheFiles()
+	timeStartupStepNoError("common.CleanupOldCacheFiles", common.CleanupOldCacheFiles)
 
-	// 初始化模型
-	model.GetPricing()
+	// 初始化模型定价缓存放到后台，避免 Supabase 慢查询把 Render 冷启动拖到网关超时。
+	warmPricingCacheAsync()
 
 	// Initialize SQL Database
-	err = model.InitLogDB()
+	err = timeStartupStep("model.InitLogDB", model.InitLogDB)
 	if err != nil {
 		return err
 	}
 
 	// Initialize Redis
-	err = common.InitRedisClient()
+	err = timeStartupStep("common.InitRedisClient", common.InitRedisClient)
 	if err != nil {
 		return err
 	}
 
-	perfmetrics.Init()
+	timeStartupStepNoError("perfmetrics.Init", perfmetrics.Init)
 
 	// 启动系统监控
-	common.StartSystemMonitor()
+	timeStartupStepNoError("common.StartSystemMonitor", common.StartSystemMonitor)
 
 	// Initialize i18n
-	err = i18n.Init()
+	err = timeStartupStep("i18n.Init", i18n.Init)
 	if err != nil {
 		common.SysError("failed to initialize i18n: " + err.Error())
 		// Don't return error, i18n is not critical
@@ -324,7 +359,7 @@ func InitResources() error {
 	i18n.SetUserLangLoader(model.GetUserLanguage)
 
 	// Load custom OAuth providers from database
-	err = oauth.LoadCustomProviders()
+	err = timeStartupStep("oauth.LoadCustomProviders", oauth.LoadCustomProviders)
 	if err != nil {
 		common.SysError("failed to load custom OAuth providers: " + err.Error())
 		// Don't return error, custom OAuth is not critical
