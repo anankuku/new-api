@@ -48,7 +48,10 @@ import {
   InputNumber,
 } from '@douyinfe/semi-ui';
 import {
+  IconChevronDown,
+  IconChevronUp,
   IconCreditCard,
+  IconDelete,
   IconLink,
   IconSave,
   IconClose,
@@ -80,9 +83,58 @@ const EditTokenModal = (props) => {
     model_limits: [],
     allow_ips: '',
     group: '',
+    group_priority: [],
     cross_group_retry: false,
     tokenCount: 1,
   });
+
+  const parseGroupPriority = (value) => {
+    if (!value) return [];
+    if (Array.isArray(value)) return value.filter(Boolean);
+    try {
+      const parsed = JSON.parse(value);
+      return Array.isArray(parsed) ? parsed.filter(Boolean) : [];
+    } catch (_) {
+      return [];
+    }
+  };
+
+  const updateGroupPriority = (priorityGroups) => {
+    // 分组优先级由数组顺序表达；首个分组同步到旧字段 group，便于兼容旧逻辑。
+    const seen = new Set();
+    const normalized = (priorityGroups || []).filter((group) => {
+      if (!group || group === 'auto' || seen.has(group)) return false;
+      seen.add(group);
+      return true;
+    });
+    formApiRef.current?.setValue('group_priority', normalized);
+    if (normalized.length > 0) {
+      formApiRef.current?.setValue('group', normalized[0]);
+      formApiRef.current?.setValue('cross_group_retry', false);
+    }
+  };
+
+  const movePriorityGroup = (priorityGroups, fromIndex, toIndex) => {
+    if (toIndex < 0 || toIndex >= priorityGroups.length) return;
+    const nextPriority = [...priorityGroups];
+    const [moved] = nextPriority.splice(fromIndex, 1);
+    nextPriority.splice(toIndex, 0, moved);
+    updateGroupPriority(nextPriority);
+  };
+
+  const removePriorityGroup = (priorityGroups, group) => {
+    updateGroupPriority(priorityGroups.filter((item) => item !== group));
+  };
+
+  const serializeGroupPriority = (localInputs) => {
+    const priorityGroups = parseGroupPriority(localInputs.group_priority);
+    localInputs.group_priority =
+      priorityGroups.length > 0 ? JSON.stringify(priorityGroups) : '';
+    if (priorityGroups.length > 0) {
+      localInputs.group = priorityGroups[0];
+      localInputs.cross_group_retry = false;
+    }
+  };
 
   const handleCancel = () => {
     props.handleClose();
@@ -169,6 +221,7 @@ const EditTokenModal = (props) => {
       } else {
         data.model_limits = [];
       }
+      data.group_priority = parseGroupPriority(data.group_priority);
       data.remain_amount = Number(
         quotaToDisplayAmount(data.remain_quota || 0).toFixed(6),
       );
@@ -238,6 +291,7 @@ const EditTokenModal = (props) => {
       }
       localInputs.model_limits = localInputs.model_limits.join(',');
       localInputs.model_limits_enabled = localInputs.model_limits.length > 0;
+      serializeGroupPriority(localInputs);
       let res = await API.put(`/api/token/`, {
         ...localInputs,
         id: parseInt(props.editingToken.id),
@@ -282,6 +336,7 @@ const EditTokenModal = (props) => {
         }
         localInputs.model_limits = localInputs.model_limits.join(',');
         localInputs.model_limits_enabled = localInputs.model_limits.length > 0;
+        serializeGroupPriority(localInputs);
         let res = await API.post(`/api/token/`, localInputs);
         const { success, message } = res.data;
         if (success) {
@@ -400,6 +455,11 @@ const EditTokenModal = (props) => {
                         }}
                         showClear
                         style={{ width: '100%' }}
+                        onChange={(value) => {
+                          if (value === 'auto') {
+                            updateGroupPriority([]);
+                          }
+                        }}
                       />
                     ) : (
                       <Form.Select
@@ -410,6 +470,99 @@ const EditTokenModal = (props) => {
                       />
                     )}
                   </Col>
+                  <Col span={24}>
+                    <Form.Select
+                      field='group_priority'
+                      label={t('分组优先级')}
+                      placeholder={t('请选择多个分组作为令牌请求优先级')}
+                      multiple
+                      optionList={groups.filter((group) => group.value !== 'auto')}
+                      renderOptionItem={renderGroupOption}
+                      filter={(input, option) => {
+                        const q = input.toLowerCase();
+                        return (
+                          option.value?.toLowerCase().includes(q) ||
+                          (typeof option.label === 'string' &&
+                            option.label.toLowerCase().includes(q))
+                        );
+                      }}
+                      extraText={t(
+                        '按当前顺序依次尝试分组；留空时使用上面的单个令牌分组',
+                      )}
+                      autoClearSearchValue={false}
+                      searchPosition='dropdown'
+                      showClear
+                      style={{ width: '100%' }}
+                      onChange={(value) => updateGroupPriority(value || [])}
+                    />
+                  </Col>
+                  {values.group_priority?.length > 0 && (
+                    <Col span={24}>
+                      <Form.Slot label={t('当前优先级顺序')}>
+                        <div className='flex flex-col gap-2 rounded-lg border border-gray-200 bg-gray-50 p-2'>
+                          {values.group_priority.map((group, index) => (
+                            <div
+                              key={group}
+                              className='flex min-h-[36px] items-center gap-2 rounded-lg border border-gray-200 bg-white px-2 py-1 shadow-sm'
+                            >
+                              <span className='w-6 text-xs text-gray-500'>
+                                {index + 1}
+                              </span>
+                              <div className='flex-1 min-w-0'>
+                                {renderGroupOption({
+                                  label:
+                                    groups.find((item) => item.value === group)
+                                      ?.label || group,
+                                  value: group,
+                                  selected: true,
+                                })}
+                              </div>
+                              <Button
+                                size='small'
+                                theme='borderless'
+                                icon={<IconChevronUp />}
+                                disabled={index === 0}
+                                onClick={() =>
+                                  movePriorityGroup(
+                                    values.group_priority,
+                                    index,
+                                    index - 1,
+                                  )
+                                }
+                              />
+                              <Button
+                                size='small'
+                                theme='borderless'
+                                icon={<IconChevronDown />}
+                                disabled={
+                                  index === values.group_priority.length - 1
+                                }
+                                onClick={() =>
+                                  movePriorityGroup(
+                                    values.group_priority,
+                                    index,
+                                    index + 1,
+                                  )
+                                }
+                              />
+                              <Button
+                                size='small'
+                                theme='borderless'
+                                type='danger'
+                                icon={<IconDelete />}
+                                onClick={() =>
+                                  removePriorityGroup(
+                                    values.group_priority,
+                                    group,
+                                  )
+                                }
+                              />
+                            </div>
+                          ))}
+                        </div>
+                      </Form.Slot>
+                    </Col>
+                  )}
                   <Col
                     span={24}
                     style={{

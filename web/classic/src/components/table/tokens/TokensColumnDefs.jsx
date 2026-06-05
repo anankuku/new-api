@@ -60,6 +60,17 @@ function renderTimestamp(timestamp) {
   return <>{timestamp2string(timestamp)}</>;
 }
 
+const parseGroupPriority = (value) => {
+  if (!value) return [];
+  if (Array.isArray(value)) return value.filter(Boolean);
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed.filter(Boolean) : [];
+  } catch (_) {
+    return [];
+  }
+};
+
 // Render status column only (no usage)
 const renderStatus = (text, record, t) => {
   const enabled = text === 1;
@@ -89,6 +100,41 @@ const renderStatus = (text, record, t) => {
 
 // Render group column
 const renderGroupColumn = (text, record, t, groupRatios = {}) => {
+  const groupPriority = parseGroupPriority(record?.group_priority);
+  if (groupPriority.length > 0) {
+    const primaryGroup = groupPriority[0];
+    const ratio = groupRatios[primaryGroup];
+    return (
+      <Tooltip
+        content={
+          <div className='space-y-1'>
+            <div className='font-medium'>{t('分组优先级')}</div>
+            {groupPriority.map((group, index) => (
+              <div key={group}>
+                {index + 1}. {group}
+              </div>
+            ))}
+          </div>
+        }
+        position='top'
+      >
+        <span className='flex items-center gap-1'>
+          {renderGroup(primaryGroup)}
+          {ratio !== undefined && (
+            <Tag size='small' color='green' shape='circle'>
+              {ratio}x
+            </Tag>
+          )}
+          {groupPriority.length > 1 && (
+            <Tag size='small' color='blue' shape='circle'>
+              +{groupPriority.length - 1}
+            </Tag>
+          )}
+        </span>
+      </Tooltip>
+    );
+  }
+
   if (text === 'auto') {
     return (
       <Tooltip
