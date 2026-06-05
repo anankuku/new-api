@@ -47,6 +47,21 @@ RUN apt-get update \
 
 COPY --from=builder2 /build/new-api /
 COPY LICENSE NOTICE THIRD-PARTY-LICENSES.md /licenses/
+
+# Render 免费实例只有 512MB 内存，这里给自定义镜像设置更保守的默认值。
+# 这些 ENV 都可以在 Render 控制台里覆盖，不影响数据库连接和加密密钥。
+ENV GOMEMLIMIT=320MiB \
+    GOGC=50 \
+    SQL_MAX_OPEN_CONNS=20 \
+    SQL_MAX_IDLE_CONNS=5 \
+    RELAY_MAX_IDLE_CONNS=80 \
+    RELAY_MAX_IDLE_CONNS_PER_HOST=20 \
+    STREAM_SCANNER_MAX_BUFFER_MB=16 \
+    MAX_REQUEST_BODY_MB=32 \
+    MAX_FILE_DOWNLOAD_MB=16 \
+    CHANNEL_UPSTREAM_MODEL_UPDATE_TASK_ENABLED=false \
+    PRICING_CACHE_WARM_ENABLED=false
+
 EXPOSE 3000
 WORKDIR /data
 ENTRYPOINT ["/new-api"]
