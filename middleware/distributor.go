@@ -105,7 +105,21 @@ func Distribute() func(c *gin.Context) {
 					affinityUsable := false
 					preferred, err := model.CacheGetChannel(preferredChannelID)
 					if err == nil && preferred != nil && preferred.Status == common.ChannelStatusEnabled {
-						if usingGroup == "auto" {
+						tokenGroupPriority := common.GetContextKeyStringSlice(c, constant.ContextKeyTokenGroupPriority)
+						if len(tokenGroupPriority) > 0 && usingGroup == tokenGroupPriority[0] {
+							// 令牌优先级模式下，偏好渠道必须落在该令牌允许的优先级分组中。
+							for index, g := range tokenGroupPriority {
+								if model.IsChannelEnabledForGroupModel(g, modelRequest.Model, preferred.Id) {
+									selectGroup = g
+									common.SetContextKey(c, constant.ContextKeyAutoGroup, g)
+									common.SetContextKey(c, constant.ContextKeyTokenGroupPriorityIndex, index)
+									channel = preferred
+									affinityUsable = true
+									service.MarkChannelAffinityUsed(c, g, preferred.Id)
+									break
+								}
+							}
+						} else if usingGroup == "auto" {
 							userGroup := common.GetContextKeyString(c, constant.ContextKeyUserGroup)
 							autoGroups := service.GetUserAutoGroup(userGroup)
 							for _, g := range autoGroups {
@@ -139,7 +153,10 @@ func Distribute() func(c *gin.Context) {
 					})
 					if err != nil {
 						showGroup := usingGroup
-						if usingGroup == "auto" {
+						tokenGroupPriority := common.GetContextKeyStringSlice(c, constant.ContextKeyTokenGroupPriority)
+						if len(tokenGroupPriority) > 0 && usingGroup == tokenGroupPriority[0] {
+							showGroup = fmt.Sprintf("priority(%s)", selectGroup)
+						} else if usingGroup == "auto" {
 							showGroup = fmt.Sprintf("auto(%s)", selectGroup)
 						}
 						message := i18n.T(c, i18n.MsgDistributorGetChannelFailed, map[string]any{"Group": showGroup, "Model": modelRequest.Model, "Error": err.Error()})
@@ -152,7 +169,12 @@ func Distribute() func(c *gin.Context) {
 						return
 					}
 					if channel == nil {
-						abortWithOpenAiMessage(c, http.StatusServiceUnavailable, i18n.T(c, i18n.MsgDistributorNoAvailableChannel, map[string]any{"Group": usingGroup, "Model": modelRequest.Model}), types.ErrorCodeModelNotFound)
+						showGroup := usingGroup
+						tokenGroupPriority := common.GetContextKeyStringSlice(c, constant.ContextKeyTokenGroupPriority)
+						if len(tokenGroupPriority) > 0 && usingGroup == tokenGroupPriority[0] {
+							showGroup = fmt.Sprintf("priority(%s)", selectGroup)
+						}
+						abortWithOpenAiMessage(c, http.StatusServiceUnavailable, i18n.T(c, i18n.MsgDistributorNoAvailableChannel, map[string]any{"Group": showGroup, "Model": modelRequest.Model}), types.ErrorCodeModelNotFound)
 						return
 					}
 				}

@@ -28,6 +28,7 @@ type Token struct {
 	UsedQuota          int            `json:"used_quota" gorm:"default:0"` // used quota
 	Group              string         `json:"group" gorm:"default:''"`
 	CrossGroupRetry    bool           `json:"cross_group_retry"` // 跨分组重试，仅auto分组有效
+	GroupPriority      string         `json:"group_priority" gorm:"type:text"` // 令牌级分组优先级，保存为 JSON 字符串数组
 	DeletedAt          gorm.DeletedAt `gorm:"index"`
 }
 
@@ -76,6 +77,66 @@ func (token *Token) GetIpLimits() []string {
 		}
 	}
 	return ipLimits
+}
+
+// ParseTokenGroupPriority 将前端传来的 JSON 字符串数组解析为有序分组列表。
+// 这里会去掉空白、去重，并兼容旧式的逗号/换行分隔文本，避免脏数据影响路由选择。
+func ParseTokenGroupPriority(raw string) []string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return []string{}
+	}
+
+	groups := make([]string, 0)
+	if strings.HasPrefix(raw, "[") {
+		if err := common.Unmarshal([]byte(raw), &groups); err != nil {
+			groups = []string{}
+		}
+	} else {
+		groups = strings.FieldsFunc(raw, func(r rune) bool {
+			return r == ',' || r == '，' || r == '\n' || r == '\r'
+		})
+	}
+
+	normalizedGroups := make([]string, 0, len(groups))
+	seen := make(map[string]bool, len(groups))
+	for _, group := range groups {
+		group = strings.TrimSpace(group)
+		if group == "" || seen[group] {
+			continue
+		}
+		seen[group] = true
+		normalizedGroups = append(normalizedGroups, group)
+	}
+	return normalizedGroups
+}
+
+// GetGroupPriority 返回当前令牌配置的有序分组列表，空列表表示沿用旧的单分组逻辑。
+func (token *Token) GetGroupPriority() []string {
+	if token == nil {
+		return []string{}
+	}
+	return ParseTokenGroupPriority(token.GroupPriority)
+}
+
+// NormalizeGroupPriority 将分组优先级重新保存为稳定的 JSON，并把首个分组同步到旧字段 group。
+// group 字段继续作为旧版兼容字段和默认分组展示字段使用。
+func (token *Token) NormalizeGroupPriority() {
+	if token == nil {
+		return
+	}
+	groups := token.GetGroupPriority()
+	if len(groups) == 0 {
+		token.GroupPriority = ""
+		return
+	}
+	jsonBytes, err := common.Marshal(groups)
+	if err != nil {
+		token.GroupPriority = ""
+		return
+	}
+	token.GroupPriority = string(jsonBytes)
+	token.Group = groups[0]
 }
 
 func GetAllUserTokens(userId int, startIdx int, num int) ([]*Token, error) {
@@ -295,7 +356,7 @@ func (token *Token) Update() (err error) {
 		}
 	}()
 	err = DB.Model(token).Select("name", "status", "expired_time", "remain_quota", "unlimited_quota",
-		"model_limits_enabled", "model_limits", "allow_ips", "group", "cross_group_retry").Updates(token).Error
+		"model_limits_enabled", "model_limits", "allow_ips", "group", "cross_group_retry", "group_priority").Updates(token).Error
 	return err
 }
 

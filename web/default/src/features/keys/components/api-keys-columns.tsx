@@ -33,6 +33,7 @@ import { DataTableColumnHeader } from '@/components/data-table'
 import { GroupBadge } from '@/components/group-badge'
 import { StatusBadge } from '@/components/status-badge'
 import { API_KEY_STATUSES } from '../constants'
+import { parseApiKeyGroupPriority } from '../lib'
 import { type ApiKey } from '../types'
 import {
   ApiKeyCell,
@@ -200,6 +201,50 @@ export function useApiKeysColumns(): ColumnDef<ApiKey>[] {
         const apiKey = row.original
         const group = row.getValue('group') as string
         const ratio = group && group !== 'auto' ? groupRatios[group] : undefined
+        const groupPriority = parseApiKeyGroupPriority(apiKey.group_priority)
+
+        if (groupPriority.length > 0) {
+          const primaryGroup = groupPriority[0]
+          return (
+            <Tooltip>
+              <TooltipTrigger
+                render={
+                  <span className='inline-flex items-center gap-1.5 text-xs' />
+                }
+              >
+                <GroupBadge
+                  group={primaryGroup}
+                  ratio={groupRatios[primaryGroup]}
+                />
+                {groupPriority.length > 1 && (
+                  <StatusBadge
+                    label={t('+{{count}}', {
+                      count: groupPriority.length - 1,
+                    })}
+                    variant='info'
+                    copyable={false}
+                  />
+                )}
+              </TooltipTrigger>
+              <TooltipContent>
+                <div className='max-w-64 space-y-1 text-xs'>
+                  <div className='font-medium'>{t('Group Priority')}</div>
+                  {groupPriority.map((priorityGroup, index) => (
+                    <div
+                      key={priorityGroup}
+                      className='flex items-center gap-2'
+                    >
+                      <span className='text-muted-foreground w-5 tabular-nums'>
+                        {index + 1}
+                      </span>
+                      <span className='truncate'>{priorityGroup}</span>
+                    </div>
+                  ))}
+                </div>
+              </TooltipContent>
+            </Tooltip>
+          )
+        }
 
         if (group === 'auto') {
           return (

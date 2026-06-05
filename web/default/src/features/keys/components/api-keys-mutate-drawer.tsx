@@ -20,7 +20,16 @@ import { useEffect, useState } from 'react'
 import { useForm, type SubmitErrorHandler } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { useQuery } from '@tanstack/react-query'
-import { ChevronDown, KeyRound, Settings2, WalletCards } from 'lucide-react'
+import {
+  ArrowDown,
+  ArrowUp,
+  ChevronDown,
+  GripVertical,
+  KeyRound,
+  Settings2,
+  WalletCards,
+  X,
+} from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 import { getUserModels, getUserGroups } from '@/lib/api'
@@ -64,6 +73,7 @@ import {
   sideDrawerHeaderClassName,
   sideDrawerSwitchItemClassName,
 } from '@/components/drawer-layout'
+import { GroupBadge } from '@/components/group-badge'
 import { MultiSelect } from '@/components/multi-select'
 import { createApiKey, updateApiKey, getApiKey } from '../api'
 import { ERROR_MESSAGES, SUCCESS_MESSAGES } from '../constants'
@@ -98,6 +108,9 @@ export function ApiKeysMutateDrawer({
   const { status } = useStatus()
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [advancedOpen, setAdvancedOpen] = useState(false)
+  const [draggingPriorityGroup, setDraggingPriorityGroup] = useState<
+    string | null
+  >(null)
   const defaultUseAutoGroup = status?.default_use_auto_group === true
 
   // Fetch models
@@ -123,6 +136,11 @@ export function ApiKeysMutateDrawer({
       desc: info.desc || key,
       ratio: info.ratio,
     })
+  )
+  const groupRatios = Object.fromEntries(
+    groups
+      .filter((group) => typeof group.ratio === 'number')
+      .map((group) => [group.value, group.ratio as number])
   )
   const backendHasAuto = groups.some((g) => g.value === 'auto')
   const schema = getApiKeyFormSchema(t)
@@ -162,6 +180,70 @@ export function ApiKeysMutateDrawer({
       }
     }
   }, [groups, form])
+
+  const groupPriorityOptions = groups
+    .filter((group) => group.value !== 'auto')
+    .map((group) => ({
+      label: group.label,
+      value: group.value,
+    }))
+
+  const syncPrimaryGroupFromPriority = (nextPriority: string[]) => {
+    if (nextPriority.length === 0) return
+    form.setValue('group', nextPriority[0], {
+      shouldDirty: true,
+      shouldValidate: true,
+    })
+    form.setValue('cross_group_retry', false, {
+      shouldDirty: true,
+      shouldValidate: true,
+    })
+  }
+
+  const setGroupPriority = (nextPriority: string[]) => {
+    // 分组优先级由数组顺序表达，前端保持去重，后端会再次校验权限和可用性。
+    const seen = new Set<string>()
+    const normalized = nextPriority.filter((group) => {
+      if (!group || group === 'auto' || seen.has(group)) return false
+      seen.add(group)
+      return true
+    })
+    form.setValue('group_priority', normalized, {
+      shouldDirty: true,
+      shouldValidate: true,
+    })
+    syncPrimaryGroupFromPriority(normalized)
+  }
+
+  const movePriorityGroup = (fromIndex: number, toIndex: number) => {
+    const currentPriority = form.getValues('group_priority') ?? []
+    if (toIndex < 0 || toIndex >= currentPriority.length) return
+    const nextPriority = [...currentPriority]
+    const [moved] = nextPriority.splice(fromIndex, 1)
+    nextPriority.splice(toIndex, 0, moved)
+    setGroupPriority(nextPriority)
+  }
+
+  const removePriorityGroup = (group: string) => {
+    const nextPriority = (form.getValues('group_priority') ?? []).filter(
+      (item) => item !== group
+    )
+    setGroupPriority(nextPriority)
+  }
+
+  const handlePriorityDrop = (targetGroup: string) => {
+    if (!draggingPriorityGroup || draggingPriorityGroup === targetGroup) {
+      setDraggingPriorityGroup(null)
+      return
+    }
+    const currentPriority = form.getValues('group_priority') ?? []
+    const fromIndex = currentPriority.indexOf(draggingPriorityGroup)
+    const toIndex = currentPriority.indexOf(targetGroup)
+    if (fromIndex >= 0 && toIndex >= 0) {
+      movePriorityGroup(fromIndex, toIndex)
+    }
+    setDraggingPriorityGroup(null)
+  }
 
   const onSubmit = async (data: ApiKeyFormValues) => {
     setIsSubmitting(true)
@@ -305,13 +387,135 @@ export function ApiKeysMutateDrawer({
                       <ApiKeyGroupCombobox
                         options={groups}
                         value={field.value}
-                        onValueChange={field.onChange}
+                        onValueChange={(value) => {
+                          field.onChange(value)
+                          if (value === 'auto') {
+                            setGroupPriority([])
+                          }
+                        }}
                         placeholder={t('Select a group')}
                       />
                     </FormControl>
                     <FormMessage />
                   </FormItem>
                 )}
+              />
+
+              <FormField
+                control={form.control}
+                name='group_priority'
+                render={({ field }) => {
+                  const priorityGroups = field.value ?? []
+
+                  return (
+                    <FormItem>
+                      <FormLabel>{t('Group Priority')}</FormLabel>
+                      <FormControl>
+                        <MultiSelect
+                          options={groupPriorityOptions}
+                          selected={priorityGroups}
+                          onChange={(values) => {
+                            field.onChange(values)
+                            setGroupPriority(values)
+                          }}
+                          placeholder={t(
+                            'Select groups in fallback priority order'
+                          )}
+                        />
+                      </FormControl>
+                      <FormDescription>
+                        {t(
+                          'Requests will try these groups from top to bottom. Leave empty to use the single group above.'
+                        )}
+                      </FormDescription>
+
+                      {priorityGroups.length > 0 && (
+                        <div className='border-border/70 bg-muted/20 rounded-md border p-2'>
+                          <div className='text-muted-foreground mb-2 text-xs font-medium'>
+                            {t('Current priority order')}
+                          </div>
+                          <div className='flex flex-col gap-2'>
+                            {priorityGroups.map((group, index) => (
+                              <div
+                                key={group}
+                                draggable
+                                onDragStart={() =>
+                                  setDraggingPriorityGroup(group)
+                                }
+                                onDragOver={(event) => event.preventDefault()}
+                                onDrop={() => handlePriorityDrop(group)}
+                                onDragEnd={() => setDraggingPriorityGroup(null)}
+                                className={cn(
+                                  'bg-background flex min-h-10 items-center gap-2 rounded-md border px-2 py-1.5 text-sm shadow-sm',
+                                  draggingPriorityGroup === group &&
+                                    'border-primary/60 opacity-70'
+                                )}
+                              >
+                                <GripVertical
+                                  className='text-muted-foreground size-4 shrink-0 cursor-grab'
+                                  aria-hidden='true'
+                                />
+                                <span className='text-muted-foreground w-6 shrink-0 text-xs tabular-nums'>
+                                  {index + 1}
+                                </span>
+                                <div className='min-w-0 flex-1'>
+                                  <GroupBadge
+                                    group={group}
+                                    ratio={groupRatios[group]}
+                                  />
+                                </div>
+                                <div className='flex shrink-0 items-center gap-1'>
+                                  <Button
+                                    type='button'
+                                    variant='ghost'
+                                    size='icon'
+                                    className='size-7'
+                                    disabled={index === 0}
+                                    aria-label={t('Move up')}
+                                    title={t('Move up')}
+                                    onClick={() =>
+                                      movePriorityGroup(index, index - 1)
+                                    }
+                                  >
+                                    <ArrowUp className='size-3.5' />
+                                  </Button>
+                                  <Button
+                                    type='button'
+                                    variant='ghost'
+                                    size='icon'
+                                    className='size-7'
+                                    disabled={
+                                      index === priorityGroups.length - 1
+                                    }
+                                    aria-label={t('Move down')}
+                                    title={t('Move down')}
+                                    onClick={() =>
+                                      movePriorityGroup(index, index + 1)
+                                    }
+                                  >
+                                    <ArrowDown className='size-3.5' />
+                                  </Button>
+                                  <Button
+                                    type='button'
+                                    variant='ghost'
+                                    size='icon'
+                                    className='text-muted-foreground hover:text-destructive size-7'
+                                    aria-label={t('Remove')}
+                                    title={t('Remove')}
+                                    onClick={() => removePriorityGroup(group)}
+                                  >
+                                    <X className='size-3.5' />
+                                  </Button>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                      <FormMessage />
+                    </FormItem>
+                  )
+                }}
               />
 
               {selectedGroup === 'auto' && (

@@ -36,6 +36,7 @@ export function getApiKeyFormSchema(t: TFunction) {
       model_limits: z.array(z.string()),
       allow_ips: z.string().optional(),
       group: z.string().optional(),
+      group_priority: z.array(z.string()).optional(),
       cross_group_retry: z.boolean().optional(),
       tokenCount: z.number().min(1).optional(),
     })
@@ -71,6 +72,7 @@ export const API_KEY_FORM_DEFAULT_VALUES: ApiKeyFormValues = {
   model_limits: [],
   allow_ips: '',
   group: DEFAULT_GROUP,
+  group_priority: [],
   cross_group_retry: true,
   tokenCount: 1,
 }
@@ -95,6 +97,9 @@ export function getApiKeyFormDefaultValues(
 export function transformFormDataToPayload(
   data: ApiKeyFormValues
 ): ApiKeyFormData {
+  const groupPriority = data.group_priority ?? []
+  const group = groupPriority[0] || data.group || ''
+
   return {
     name: data.name,
     remain_quota: data.unlimited_quota
@@ -107,8 +112,30 @@ export function transformFormDataToPayload(
     model_limits_enabled: data.model_limits.length > 0,
     model_limits: data.model_limits.join(','),
     allow_ips: data.allow_ips || '',
-    group: data.group || '',
-    cross_group_retry: data.group === 'auto' ? !!data.cross_group_retry : false,
+    group,
+    group_priority:
+      groupPriority.length > 0 ? JSON.stringify(groupPriority) : '',
+    cross_group_retry: group === 'auto' ? !!data.cross_group_retry : false,
+  }
+}
+
+// parseApiKeyGroupPriority 负责把后端保存的 JSON 字符串数组恢复为前端可排序数组。
+// 解析失败时返回空数组，避免单个异常字段导致令牌编辑弹窗打不开。
+export function parseApiKeyGroupPriority(value?: string | null): string[] {
+  if (!value) return []
+  try {
+    const parsed = JSON.parse(value)
+    if (!Array.isArray(parsed)) return []
+    const seen = new Set<string>()
+    return parsed
+      .map((item) => String(item).trim())
+      .filter((item) => {
+        if (!item || seen.has(item)) return false
+        seen.add(item)
+        return true
+      })
+  } catch {
+    return []
   }
 }
 
@@ -133,6 +160,7 @@ export function transformApiKeyToFormDefaults(
       : [],
     allow_ips: apiKey.allow_ips || '',
     group: apiKey.group || DEFAULT_GROUP,
+    group_priority: parseApiKeyGroupPriority(apiKey.group_priority),
     cross_group_retry: !!apiKey.cross_group_retry,
     tokenCount: 1,
   }

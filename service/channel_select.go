@@ -45,6 +45,64 @@ func (p *RetryParam) ResetRetryNextTry() {
 	p.resetNextTry = true
 }
 
+func getContextInt(c *gin.Context, key constant.ContextKey) int {
+	value, exists := common.GetContextKey(c, key)
+	if !exists {
+		return 0
+	}
+	if idx, ok := value.(int); ok {
+		return idx
+	}
+	return 0
+}
+
+func getTokenPrioritySatisfiedChannel(param *RetryParam, priorityGroups []string) (*model.Channel, string, error) {
+	var channel *model.Channel
+	selectGroup := param.TokenGroup
+	startGroupIndex := getContextInt(param.Ctx, constant.ContextKeyTokenGroupPriorityIndex)
+
+	for i := startGroupIndex; i < len(priorityGroups); i++ {
+		group := priorityGroups[i]
+		selectGroup = group
+
+		// priorityRetry 表示当前分组内的渠道优先级重试次数；切到下一个分组时从 0 重新开始。
+		priorityRetry := param.GetRetry()
+		if i > startGroupIndex {
+			priorityRetry = 0
+		}
+
+		logger.LogDebug(param.Ctx, "Token priority selecting group: %s, priorityRetry: %d", group, priorityRetry)
+		var err error
+		channel, err = model.GetRandomSatisfiedChannel(group, param.ModelName, priorityRetry)
+		if err != nil {
+			return nil, selectGroup, err
+		}
+		if channel == nil {
+			// 当前分组没有该模型可用渠道时，直接尝试下一个令牌优先级分组。
+			logger.LogDebug(param.Ctx, "No available channel in token priority group %s for model %s at priorityRetry %d, trying next group", group, param.ModelName, priorityRetry)
+			common.SetContextKey(param.Ctx, constant.ContextKeyTokenGroupPriorityIndex, i+1)
+			param.SetRetry(0)
+			continue
+		}
+
+		// 复用 auto_group 上下文，让后续计费和日志拿到最终真实命中的分组。
+		common.SetContextKey(param.Ctx, constant.ContextKeyAutoGroup, group)
+		logger.LogDebug(param.Ctx, "Token priority selected group: %s", group)
+
+		if priorityRetry >= common.RetryTimes {
+			// 当前分组已经走完可重试优先级，下次外层重试从下一个分组开始。
+			common.SetContextKey(param.Ctx, constant.ContextKeyTokenGroupPriorityIndex, i+1)
+			param.SetRetry(0)
+			param.ResetRetryNextTry()
+		} else {
+			common.SetContextKey(param.Ctx, constant.ContextKeyTokenGroupPriorityIndex, i)
+		}
+		break
+	}
+
+	return channel, selectGroup, nil
+}
+
 // CacheGetRandomSatisfiedChannel tries to get a random channel that satisfies the requirements.
 // 尝试获取一个满足要求的随机渠道。
 //
@@ -85,6 +143,11 @@ func CacheGetRandomSatisfiedChannel(param *RetryParam) (*model.Channel, string, 
 	var err error
 	selectGroup := param.TokenGroup
 	userGroup := common.GetContextKeyString(param.Ctx, constant.ContextKeyUserGroup)
+	tokenGroupPriority := common.GetContextKeyStringSlice(param.Ctx, constant.ContextKeyTokenGroupPriority)
+
+	if len(tokenGroupPriority) > 0 && param.TokenGroup == tokenGroupPriority[0] {
+		return getTokenPrioritySatisfiedChannel(param, tokenGroupPriority)
+	}
 
 	if param.TokenGroup == "auto" {
 		if len(setting.GetAutoGroups()) == 0 {
