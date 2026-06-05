@@ -112,7 +112,8 @@ func Distribute() func(c *gin.Context) {
 								if model.IsChannelEnabledForGroupModel(g, modelRequest.Model, preferred.Id) {
 									selectGroup = g
 									common.SetContextKey(c, constant.ContextKeyAutoGroup, g)
-									common.SetContextKey(c, constant.ContextKeyTokenGroupPriorityIndex, index)
+									// 亲和性渠道失败后的下一次重试从后续分组开始，避免重复打同一分组放大请求量。
+									common.SetContextKey(c, constant.ContextKeyTokenGroupPriorityIndex, index+1)
 									channel = preferred
 									affinityUsable = true
 									service.MarkChannelAffinityUsed(c, g, preferred.Id)

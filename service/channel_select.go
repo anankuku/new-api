@@ -60,43 +60,34 @@ func getTokenPrioritySatisfiedChannel(param *RetryParam, priorityGroups []string
 	var channel *model.Channel
 	selectGroup := param.TokenGroup
 	startGroupIndex := getContextInt(param.Ctx, constant.ContextKeyTokenGroupPriorityIndex)
+	if startGroupIndex >= len(priorityGroups) {
+		return nil, priorityGroups[len(priorityGroups)-1], nil
+	}
 
 	for i := startGroupIndex; i < len(priorityGroups); i++ {
 		group := priorityGroups[i]
 		selectGroup = group
 
-		// priorityRetry 表示当前分组内的渠道优先级重试次数；切到下一个分组时从 0 重新开始。
-		priorityRetry := param.GetRetry()
-		if i > startGroupIndex {
-			priorityRetry = 0
-		}
-
-		logger.LogDebug(param.Ctx, "Token priority selecting group: %s, priorityRetry: %d", group, priorityRetry)
+		// 令牌级分组优先级把 RetryTimes 作为“整次请求”的重试上限。
+		// 每次失败重试只推进到下一个分组，避免一个请求按分组数量被成倍放大。
+		logger.LogDebug(param.Ctx, "Token priority selecting group: %s, retry: %d", group, param.GetRetry())
 		var err error
-		channel, err = model.GetRandomSatisfiedChannel(group, param.ModelName, priorityRetry)
+		channel, err = model.GetRandomSatisfiedChannel(group, param.ModelName, 0)
 		if err != nil {
 			return nil, selectGroup, err
 		}
 		if channel == nil {
 			// 当前分组没有该模型可用渠道时，直接尝试下一个令牌优先级分组。
-			logger.LogDebug(param.Ctx, "No available channel in token priority group %s for model %s at priorityRetry %d, trying next group", group, param.ModelName, priorityRetry)
+			logger.LogDebug(param.Ctx, "No available channel in token priority group %s for model %s, trying next group", group, param.ModelName)
 			common.SetContextKey(param.Ctx, constant.ContextKeyTokenGroupPriorityIndex, i+1)
-			param.SetRetry(0)
 			continue
 		}
 
 		// 复用 auto_group 上下文，让后续计费和日志拿到最终真实命中的分组。
 		common.SetContextKey(param.Ctx, constant.ContextKeyAutoGroup, group)
+		// 当前渠道失败后的下一次重试从下一个令牌分组开始。
+		common.SetContextKey(param.Ctx, constant.ContextKeyTokenGroupPriorityIndex, i+1)
 		logger.LogDebug(param.Ctx, "Token priority selected group: %s", group)
-
-		if priorityRetry >= common.RetryTimes {
-			// 当前分组已经走完可重试优先级，下次外层重试从下一个分组开始。
-			common.SetContextKey(param.Ctx, constant.ContextKeyTokenGroupPriorityIndex, i+1)
-			param.SetRetry(0)
-			param.ResetRetryNextTry()
-		} else {
-			common.SetContextKey(param.Ctx, constant.ContextKeyTokenGroupPriorityIndex, i)
-		}
 		break
 	}
 
