@@ -105,6 +105,10 @@ func InitEnv() {
 	RelayIdleConnTimeout = GetEnvOrDefault("RELAY_IDLE_CONN_TIMEOUT", 90)
 	RelayMaxIdleConns = GetEnvOrDefault("RELAY_MAX_IDLE_CONNS", 500)
 	RelayMaxIdleConnsPerHost = GetEnvOrDefault("RELAY_MAX_IDLE_CONNS_PER_HOST", 100)
+	RelayImageRequestTimeout = GetEnvOrDefault("RELAY_IMAGE_REQUEST_TIMEOUT", 900)
+	RelayImageRequestTCPKeepAlive = GetEnvOrDefault("RELAY_IMAGE_REQUEST_TCP_KEEPALIVE", 30)
+	RelayImageRequestDisableHTTP2 = GetEnvOrDefaultBool("RELAY_IMAGE_REQUEST_DISABLE_HTTP2", true)
+	RelayImageRequestDebug = GetEnvOrDefaultBool("RELAY_IMAGE_REQUEST_DEBUG", false)
 
 	// Initialize string variables with GetEnvOrDefaultString
 	GeminiSafetySetting = GetEnvOrDefaultString("GEMINI_SAFETY_SETTING", "BLOCK_NONE")

@@ -173,6 +173,10 @@ var RelayTimeout int // unit is second
 var RelayIdleConnTimeout int // unit is second
 var RelayMaxIdleConns int
 var RelayMaxIdleConnsPerHost int
+var RelayImageRequestTimeout int      // unit is second
+var RelayImageRequestTCPKeepAlive int // unit is second
+var RelayImageRequestDisableHTTP2 bool
+var RelayImageRequestDebug bool
 
 var GeminiSafetySetting string
 

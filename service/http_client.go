@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"net"
 	"net/http"
@@ -17,6 +18,7 @@ import (
 
 var (
 	httpClient      *http.Client
+	imageHttpClient *http.Client
 	proxyClientLock sync.Mutex
 	proxyClients    = make(map[string]*http.Client)
 )
@@ -57,10 +59,110 @@ func InitHttpClient() {
 			CheckRedirect: checkRedirect,
 		}
 	}
+
+	imageHttpClient = newImageRequestHttpClient("", nil)
 }
 
 func GetHttpClient() *http.Client {
 	return httpClient
+}
+
+func GetImageRequestHttpClient() *http.Client {
+	if imageHttpClient != nil {
+		return imageHttpClient
+	}
+	return GetHttpClient()
+}
+
+func newImageRequestTransport(proxyFunc func(*http.Request) (*url.URL, error), dialContext func(context.Context, string, string) (net.Conn, error)) *http.Transport {
+	if dialContext == nil {
+		dialer := &net.Dialer{
+			Timeout:   30 * time.Second,
+			KeepAlive: time.Duration(common.RelayImageRequestTCPKeepAlive) * time.Second,
+		}
+		dialContext = dialer.DialContext
+	}
+
+	transport := &http.Transport{
+		// 图片请求每次新建 client（不缓存），transport 连接池天然为空，不会复用 stale 连接。
+		Proxy:                 proxyFunc,
+		DialContext:           dialContext,
+		ForceAttemptHTTP2:     !common.RelayImageRequestDisableHTTP2,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
+	}
+	if common.RelayImageRequestDisableHTTP2 {
+		// 明确关闭 HTTP/2 协商，兼容部分中转网关对长时间图片请求的连接处理。
+		transport.TLSNextProto = map[string]func(string, *tls.Conn) http.RoundTripper{}
+	}
+	if common.TLSInsecureSkipVerify {
+		transport.TLSClientConfig = common.InsecureTLSConfig
+	}
+	return transport
+}
+
+func newImageRequestHttpClient(proxyURL string, dialContext func(context.Context, string, string) (net.Conn, error)) *http.Client {
+	var proxyFunc func(*http.Request) (*url.URL, error)
+	if proxyURL == "" {
+		proxyFunc = http.ProxyFromEnvironment
+	} else if parsedURL, err := url.Parse(proxyURL); err == nil {
+		proxyFunc = http.ProxyURL(parsedURL)
+	}
+
+	client := &http.Client{
+		Transport:     newImageRequestTransport(proxyFunc, dialContext),
+		CheckRedirect: checkRedirect,
+	}
+	if common.RelayImageRequestTimeout > 0 {
+		client.Timeout = time.Duration(common.RelayImageRequestTimeout) * time.Second
+	}
+	return client
+}
+
+func NewImageRequestHttpClient(proxyURL string) (*http.Client, error) {
+	if proxyURL == "" {
+		return GetImageRequestHttpClient(), nil
+	}
+
+	// 图片请求不缓存带代理的 client，每次新建 transport 以避免复用代理侧已关闭的 stale 连接。
+	parsedURL, err := url.Parse(proxyURL)
+	if err != nil {
+		return nil, err
+	}
+
+	var client *http.Client
+	switch parsedURL.Scheme {
+	case "http", "https":
+		client = newImageRequestHttpClient(proxyURL, nil)
+	case "socks5", "socks5h":
+		var auth *proxy.Auth
+		if parsedURL.User != nil {
+			auth = &proxy.Auth{
+				User:     parsedURL.User.Username(),
+				Password: "",
+			}
+			if password, ok := parsedURL.User.Password(); ok {
+				auth.Password = password
+			}
+		}
+		dialer, err := proxy.SOCKS5("tcp", parsedURL.Host, auth, proxy.Direct)
+		if err != nil {
+			return nil, err
+		}
+		client = &http.Client{
+			Transport: newImageRequestTransport(nil, func(ctx context.Context, network, addr string) (net.Conn, error) {
+				return dialer.Dial(network, addr)
+			}),
+			CheckRedirect: checkRedirect,
+		}
+		if common.RelayImageRequestTimeout > 0 {
+			client.Timeout = time.Duration(common.RelayImageRequestTimeout) * time.Second
+		}
+	default:
+		return nil, fmt.Errorf("unsupported proxy scheme: %s, must be http, https, socks5 or socks5h", parsedURL.Scheme)
+	}
+
+	return client, nil
 }
 
 // GetHttpClientWithProxy returns the default client or a proxy-enabled one when proxyURL is provided.

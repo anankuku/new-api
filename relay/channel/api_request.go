@@ -2,10 +2,12 @@ package channel
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptrace"
 	"regexp"
 	"strings"
 	"sync"
@@ -484,16 +486,102 @@ func sendPingData(c *gin.Context, mutex *sync.Mutex) error {
 func DoRequest(c *gin.Context, req *http.Request, info *common.RelayInfo) (*http.Response, error) {
 	return doRequest(c, req, info)
 }
+
+func addImageRequestTrace(c *gin.Context, req *http.Request, info *common.RelayInfo, proxyEnabled bool) *http.Request {
+	if req == nil || info == nil || !common2.RelayImageRequestDebug {
+		return req
+	}
+	if info.RelayMode != constant.RelayModeImagesGenerations && info.RelayMode != constant.RelayModeImagesEdits {
+		return req
+	}
+
+	startedAt := time.Now()
+	logTrace := func(event string, detail string) {
+		logger.LogInfo(c, fmt.Sprintf(
+			"image upstream trace: event=%s elapsed_ms=%d channel_id=%d proxy_enabled=%t method=%s host=%s content_length=%d %s",
+			event,
+			time.Since(startedAt).Milliseconds(),
+			info.ChannelId,
+			proxyEnabled,
+			req.Method,
+			req.URL.Host,
+			req.ContentLength,
+			detail,
+		))
+	}
+
+	trace := &httptrace.ClientTrace{
+		DNSStart: func(info httptrace.DNSStartInfo) {
+			logTrace("dns_start", fmt.Sprintf("host=%s", info.Host))
+		},
+		DNSDone: func(info httptrace.DNSDoneInfo) {
+			logTrace("dns_done", fmt.Sprintf("addrs=%d err=%v", len(info.Addrs), info.Err))
+		},
+		ConnectStart: func(network, addr string) {
+			logTrace("connect_start", fmt.Sprintf("network=%s addr=%s", network, addr))
+		},
+		ConnectDone: func(network, addr string, err error) {
+			logTrace("connect_done", fmt.Sprintf("network=%s addr=%s err=%v", network, addr, err))
+		},
+		TLSHandshakeStart: func() {
+			logTrace("tls_start", "")
+		},
+		TLSHandshakeDone: func(state tls.ConnectionState, err error) {
+			logTrace("tls_done", fmt.Sprintf("version=0x%x alpn=%s err=%v", state.Version, state.NegotiatedProtocol, err))
+		},
+		GotConn: func(info httptrace.GotConnInfo) {
+			remote := ""
+			if info.Conn != nil && info.Conn.RemoteAddr() != nil {
+				remote = info.Conn.RemoteAddr().String()
+			}
+			logTrace("got_conn", fmt.Sprintf("remote=%s reused=%t was_idle=%t idle_ms=%d", remote, info.Reused, info.WasIdle, info.IdleTime.Milliseconds()))
+		},
+		WroteHeaders: func() {
+			logTrace("wrote_headers", "")
+		},
+		WroteRequest: func(info httptrace.WroteRequestInfo) {
+			logTrace("wrote_request", fmt.Sprintf("err=%v", info.Err))
+		},
+		GotFirstResponseByte: func() {
+			logTrace("first_response_byte", "")
+		},
+	}
+
+	return req.WithContext(httptrace.WithClientTrace(req.Context(), trace))
+}
+
 func doRequest(c *gin.Context, req *http.Request, info *common.RelayInfo) (*http.Response, error) {
 	var client *http.Client
 	var err error
-	if info.ChannelSetting.Proxy != "" {
-		client, err = service.NewProxyHttpClient(info.ChannelSetting.Proxy)
+	isImageRequest := info != nil && (info.RelayMode == constant.RelayModeImagesGenerations || info.RelayMode == constant.RelayModeImagesEdits)
+	if isImageRequest {
+		// 图片生成/编辑通常是同步长请求，使用专用客户端减少 HTTP/2/连接复用导致的 unexpected EOF。
+		client, err = service.NewImageRequestHttpClient(info.ChannelSetting.Proxy)
 		if err != nil {
-			return nil, fmt.Errorf("new proxy http client failed: %w", err)
+			return nil, fmt.Errorf("new image request http client failed: %w", err)
 		}
 	} else {
-		client = service.GetHttpClient()
+		if info.ChannelSetting.Proxy != "" {
+			client, err = service.NewProxyHttpClient(info.ChannelSetting.Proxy)
+			if err != nil {
+				return nil, fmt.Errorf("new proxy http client failed: %w", err)
+			}
+		} else {
+			client = service.GetHttpClient()
+		}
+	}
+
+	if isImageRequest && common2.RelayImageRequestDebug {
+		proxyEnabled := info != nil && strings.TrimSpace(info.ChannelSetting.Proxy) != ""
+		logger.LogInfo(c, fmt.Sprintf(
+			"image upstream trace: event=client_selected channel_id=%d proxy_enabled=%t timeout_seconds=%d disable_http2=%t tcp_keepalive_seconds=%d",
+			info.ChannelId,
+			proxyEnabled,
+			common2.RelayImageRequestTimeout,
+			common2.RelayImageRequestDisableHTTP2,
+			common2.RelayImageRequestTCPKeepAlive,
+		))
+		req = addImageRequestTrace(c, req, info, proxyEnabled)
 	}
 
 	var stopPinger context.CancelFunc
